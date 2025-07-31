@@ -1,0 +1,23 @@
+services:
+  product-bot:
+    build: .
+    container_name: product-bot-app
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      - chromadb
+    volumes:
+      - ./app:/app/app
+
+  chromadb:
+    image: chromadb/chroma
+    container_name: chromadb-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/data
+
+volumes:
+  chroma-data:
