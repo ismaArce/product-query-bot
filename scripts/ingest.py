@@ -7,31 +7,38 @@ from langchain_core.documents import Document
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.config import settings
+from app.core.logger import get_logger
 from chromadb.utils.embedding_functions.ollama_embedding_function import (
     OllamaEmbeddingFunction,
 )
 
+logger = get_logger(__name__)
 
-def ingest_documents():
-    """
-    Reads product data from a CSV, creates documents with metadata,
-    and stores their embeddings in a persistent ChromaDB vector store.
-    """
-    print("--- Starting Document Ingestion ---")
 
-    # 1. Load Data from CSV using pandas
+def ingest_documents() -> None:
+    """Ingest product data from CSV into ChromaDB vector store.
+
+    Loads product data from CSV file, processes it into LangChain documents
+    with structured metadata, and stores embeddings in ChromaDB for semantic search.
+
+    Raises:
+        FileNotFoundError: If the CSV file doesn't exist.
+        Exception: If ChromaDB connection or ingestion fails.
+    """
+    logger.info("Starting document ingestion process")
+
     try:
         df = pd.read_csv("data/product_description.csv")
-        print(f"✅ Successfully loaded {len(df)} rows from data/product_description.csv.")
+        logger.info("Successfully loaded %d rows from CSV", len(df))
     except FileNotFoundError:
-        print("❌ Error: 'data/product_description.csv' not found. Please ensure the file exists.")
+        logger.error("CSV file 'data/product_description.csv' not found")
+        return
+    except Exception as e:
+        logger.error("Failed to load CSV file: %s", e)
         return
 
     documents = []
-    # 2. Create LangChain Documents from DataFrame Rows
     for _, row in df.iterrows():
-        # Combine the most descriptive text fields into a single
-        # string for semantic embedding and retrieval.
         page_content = (
             f"Product Name: {row.get('title', 'N/A')}\n"
             f"Description: {row.get('description', 'N/A')}\n"
@@ -39,11 +46,8 @@ def ingest_documents():
             f"Brand: {row.get('brand', 'N/A')}"
         )
 
-        # Keep all other columns as structured metadata. This is crucial
-        # for the LLM to answer specific questions about price, stock, etc.
         metadata = row.to_dict()
 
-        # Clean metadata values to ensure they're compatible with ChromaDB
         cleaned_metadata = {}
         for key, value in metadata.items():
             if pd.isna(value) or value == "":
@@ -51,45 +55,45 @@ def ingest_documents():
             elif isinstance(value, (int, float)):
                 cleaned_metadata[key] = value
             else:
-                # Convert to string and ensure it's not too long
                 str_value = str(value)
-                if len(str_value) > 1000:  # Limit string length
+                if len(str_value) > 1000:
                     str_value = str_value[:1000] + "..."
                 cleaned_metadata[key] = str_value
 
-        # Create a Document object
         doc = Document(page_content=page_content, metadata=cleaned_metadata)
         documents.append(doc)
 
-    print(f"📄 Created {len(documents)} documents to be ingested.")
+    logger.info("Created %d documents for ingestion", len(documents))
 
-    # 3. Initialize the Embedding Model
-    ollama_ef = OllamaEmbeddingFunction(
-        url="http://host.docker.internal:11434",
-        model_name=settings.EMBEDDING_MODEL_NAME,
-    )
-    # 4. Initialize ChromaDB and Add Documents
-    print(f"📦 Connecting to ChromaDB service at {settings.CHROMA_HOST}:{settings.CHROMA_PORT}")
-    db_client = chromadb.HttpClient(
-        host=settings.CHROMA_HOST,
-        port=settings.CHROMA_PORT,
-    )
-    collection = db_client.get_or_create_collection(
-        name="products",
-        embedding_function=ollama_ef,
-    )
+    try:
+        ollama_ef = OllamaEmbeddingFunction(
+            url=settings.OLLAMA_BASE_URL,
+            model_name=settings.EMBEDDING_MODEL_NAME,
+        )
 
-    # Create unique IDs for each document before adding
-    ids = [f"product_{row['id']}" for _, row in df.iterrows()]
+        logger.info("Connecting to ChromaDB at %s:%s", settings.CHROMA_HOST, settings.CHROMA_PORT)
+        db_client = chromadb.HttpClient(
+            host=settings.CHROMA_HOST,
+            port=settings.CHROMA_PORT,
+        )
+        collection = db_client.get_or_create_collection(
+            name="products",
+            embedding_function=ollama_ef,
+        )
 
-    collection.add(
-        ids=ids,
-        documents=[doc.page_content for doc in documents],
-        metadatas=[doc.metadata for doc in documents],
-    )
+        ids = [f"product_{row['id']}" for _, row in df.iterrows()]
 
-    print(f"✅ Successfully ingested {len(documents)} documents into the 'products' collection.")
-    print("--- Ingestion Complete ---")
+        collection.add(
+            ids=ids,
+            documents=[doc.page_content for doc in documents],
+            metadatas=[doc.metadata for doc in documents],
+        )
+
+        logger.info("Successfully ingested %d documents into 'products' collection", len(documents))
+
+    except Exception as e:
+        logger.error("Failed to ingest documents into ChromaDB: %s", e)
+        raise
 
 
 if __name__ == "__main__":

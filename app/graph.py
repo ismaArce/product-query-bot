@@ -1,47 +1,39 @@
-from typing import TypedDict, List
-from langchain_core.documents import Document
-from langchain_core.messages import BaseMessage
-from langgraph.graph import StateGraph, END, MessagesState, START
+from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import InMemorySaver
-from langmem.short_term import RunningSummary
-from langchain_core.messages import AnyMessage
-from langmem.short_term import SummarizationNode
-from langchain_ollama import ChatOllama
-from app.core.config import settings
-from langchain_core.messages.utils import count_tokens_approximately
+from app.core.logger import get_logger
+import app.agents as agents
 
-# Import the agent functions that will act as nodes
-from .agents import retriever_agent, summarizer_node, responder_agent
+logger = get_logger(__name__)
 
 
-class State(MessagesState):
-    context: dict[str, RunningSummary] | None
-    summarized_messages: List[AnyMessage] | None
-    documents: List[Document] | None
-    enhanced_query: str | None
-    generation: str | None
+def _build_agent_graph() -> StateGraph:
+    """Construct the multi-agent workflow graph.
+
+    Creates a sequential workflow: summarizer -> retriever -> responder
+    with in-memory checkpointing for conversation state persistence.
+
+    Returns:
+        StateGraph: Compiled agent graph ready for execution.
+    """
+    checkpointer = InMemorySaver()
+    builder = StateGraph(agents.State)
+
+    builder.add_node("summarizer", agents.summarizer_node)
+    builder.add_node("retriever", agents.retriever_agent)
+    builder.add_node("responder", agents.responder_agent)
+
+    builder.add_edge(START, "summarizer")
+    builder.add_edge("summarizer", "retriever")
+    builder.add_edge("retriever", "responder")
+    builder.add_edge("responder", END)
+
+    graph = builder.compile(checkpointer=checkpointer)
+
+    logger.info("Agent graph compiled successfully")
+    logger.debug("Checkpointer type: %s", type(checkpointer).__name__)
+    logger.debug("State keys: %s", list(agents.State.__annotations__.keys()))
+
+    return graph
 
 
-checkpointer = InMemorySaver()
-
-builder = StateGraph(State)
-
-
-# Add the agent nodes to the graph
-builder.add_node("summarizer", summarizer_node)
-builder.add_node("retriever", retriever_agent)
-builder.add_node("responder", responder_agent)
-
-# Define the edges that control the flow of work
-builder.add_edge(START, "summarizer")
-builder.add_edge("summarizer", "retriever")
-builder.add_edge("retriever", "responder")
-builder.add_edge("responder", END)
-
-# Compile the graph with the memory checkpointer
-agent_graph = builder.compile(checkpointer=checkpointer)
-
-print("✅ Agentic graph with in-memory checkpointer compiled successfully.")
-print("🔧 Checkpointer configuration:")
-print(f"   - Type: {type(checkpointer).__name__}")
-print(f"   - State keys: {list(State.__annotations__.keys())}")
+agent_graph = _build_agent_graph()
